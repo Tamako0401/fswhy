@@ -21,7 +21,7 @@ cargo run -- <path>
 
 ## Roadmap
 
-- [ ] Logical folding and node indexing
+- [x] Logical folding and node indexing
 - [ ] Interactive navigation
 - [ ] TUI interface
 - [ ] Performance optimization for large directories
