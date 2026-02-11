@@ -1,92 +1,69 @@
-use std::{env, io};
-use std::io::Write;
-use std::path::PathBuf;
+//! Main application logic and control flow.
+//!
+//! This module orchestrates the entire application by:
+//! 1. Initializing the [`Node`] tree via filesystem scanning.
+//! 2. Managing the main event loop.
+//! 3. Bridging the data model with the UI rendering and state updates.
+
 use crate::model::Node;
+use crate::ui_state::UiState;
+use std::path::PathBuf;
 
-mod model;
-mod scan;
-mod view;
+pub mod model;
+mod ui;
+mod ui_state;
 
-pub fn run() -> anyhow::Result<()>{
-    let root_path: PathBuf = env::args()
-        .nth(1)
-        .map(PathBuf::from)
-        .unwrap_or(env::current_dir()?);
+/// The core application container.
+///
+/// It owns the root [`Node`] tree, ensuring the data stays alive
+/// for the duration of the program.
+pub struct App {
+    pub node: Node,
+}
 
-    let mut root = Node::scan(root_path)?;
+impl App {
+    /// Initializes the application by scanning the provided directory path.
+    ///
+    /// # Errors
+    /// Returns an error if the path is invalid or inaccessible.
+    pub fn new(path: PathBuf) -> anyhow::Result<Self> {
+        let root = Node::scan(path)?;
+        Ok(Self { node: root })
+    }
+    /// Creates a fresh [`UiState`] tied to the lifetime of the `App`'s node tree.
+    fn create_ui_state(&self) -> UiState<'_> {
+        UiState::new(&self.node)
+    }
 
-    root.toggle();
-
-    loop {
-        let items = view::build_visible_list(&root);
-
-        let max_idx_width = items
-            .iter()
-            .filter_map(|i| i.index)
-            .max()
-            .unwrap_or(0)
-            .to_string()
-            .len();
-
-        println!("\n--- File Tree (Total: {}) ---", items.len());
-
-        for item in &items {
-            let prefix = "  ".repeat(item.depth);
-
-            let idx_str = match item.index {
-                Some(i) => format!("{:width$}", i, width = max_idx_width),
-                None => " ".repeat(max_idx_width),
-            };
-
-            let icon = if item.node.is_dir() {
-                if item.node.is_expanded() {
-                    "[-]"
-                } else {
-                    "[+]"
+    /// Starts the main application loop.
+    ///
+    /// This method handles the "Render-Input-Update" cycle:
+    /// 1. Draws the current state to the terminal.
+    /// 2. Waits for and parses user input.
+    /// 3. Updates the UI state or exits based on user actions.
+    ///
+    /// # Errors
+    /// Returns an error if a fatal I/O or parsing issue occurs.
+    pub fn run(&self) -> anyhow::Result<()> {
+        let mut state = self.create_ui_state();
+        loop {
+            ui::render(&state);
+            match ui::get_input() {
+                Ok(input) => {
+                    let err = state.update(input);
+                    match err {
+                        Ok(again) => {
+                            if !again {
+                                break Ok(());
+                            }
+                        }
+                        Err(e) => eprintln!("Error: {e:?}"),
+                    }
                 }
-            } else {
-                "   "
-            };
-
-            let size = item.node.size();
-            let size_str = if size < 1024 {
-                format!("{} B", size)
-            } else if size < 1024 * 1024 {
-                format!("{:.1} KB", size as f64 / 1024.0)
-            } else {
-                format!("{:.1} MB", size as f64 / 1024.0 / 1024.0)
-            };
-
-            println!(
-                "{} {}{} {} ({})",
-                idx_str,
-                prefix,
-                icon,
-                item.node
-                    .path()
-                    .file_name()
-                    .unwrap_or_default()
-                    .to_string_lossy(),
-                size_str
-            );
-        }
-
-        print!("\n[Index] Toggle Dir | [q] Quit > ");
-        io::stdout().flush()?;
-
-        let mut input = String::new();
-        io::stdin().read_line(&mut input)?;
-        let input = input.trim();
-
-        if input == "q" {
-            break;
-        }
-
-        if let Ok(idx) = input.parse::<usize>() {
-            if !view::toggle_by_index(&mut root, idx) {
-                println!("Invalid index (Make sure it's a directory index)!");
+                Err(e) => {
+                    eprintln!("Error: {e:?}");
+                }
             }
         }
     }
-    Ok(())
 }
