@@ -4,18 +4,38 @@
 //! terminal interface and converts raw user keystrokes into actionable [`Action`]s.
 
 use crate::model::NodeKind::*;
-use crate::ui_state::Action::Toggle;
 use crate::ui_state::{Action, UiState};
-use anyhow::bail;
+
+use crossterm::event::{self, Event, KeyCode, KeyEventKind, KeyModifiers};
+use crossterm::terminal;
 use std::io;
 use std::io::Write;
+
+/// Enables raw mode for immediate key handling and restores it on drop.
+pub struct RawModeGuard;
+
+impl Drop for RawModeGuard {
+    fn drop(&mut self) {
+        let _ = terminal::disable_raw_mode();
+    }
+}
+
+pub fn enter_raw_mode() -> anyhow::Result<RawModeGuard> {
+    terminal::enable_raw_mode()?;
+    Ok(RawModeGuard)
+}
+
+/// Returns terminal height in rows
+pub fn terminal_height() -> Option<usize> {
+    terminal::size().ok().map(|(_, rows)| rows as usize)
+}
 
 /// Renders the current file tree to the standard output.
 ///
 /// This function calculates the necessary padding for indices to ensure
 /// vertical alignment and formats file sizes into human-readable units
 /// (B, KB, MB).
-/// ```no_run
+/// ```text
 /// --- File Tree (Total: 9) ---
 /// 0 [-] fswhy (45.9 MB)
 /// 1   [+] .git (36.3 KB)
@@ -32,12 +52,38 @@ use std::io::Write;
 ///   the set of expanded nodes.
 pub fn render(state: &UiState) {
     let view = state.flatten_view();
-    let max_idx_width = view.len().to_string().len();
+    let total = view.len();
+    let max_idx_width = total.saturating_sub(1).to_string().len().max(1);
+    let height = state.viewport_height.max(1);
 
-    println!("\n--- File Tree (Total: {}) ---", view.len());
-    for (index, item) in view.iter().enumerate() {
+    let cursor = state.cursor.min(total.saturating_sub(1));
+    let start = if total <= height {
+        0
+    } else if cursor + 1 <= height {
+        0
+    } else {
+        let max_start = total.saturating_sub(height);
+        (cursor + 1 - height).min(max_start)
+    };
+    let end = (start + height).min(total);
+    let remaining_above = start;
+    let remaining_below = total.saturating_sub(end);
+
+    // Cls and move cursor to home
+    print!("\x1b[2J\x1b[H");
+
+    println!(
+        "--- File Tree (Total: {}, Showing: {}-{}) ---",
+        total,
+        start,
+        end.saturating_sub(1)
+    );
+    if remaining_above > 0 || remaining_below > 0 {
+        println!("(More: above {}, below {})", remaining_above, remaining_below);
+    }
+
+    for (index, item) in view.iter().enumerate().skip(start).take(end - start) {
         let prefix = "  ".repeat(item.depth);
-
         let idx_str = format!("{:width$}", index, width = max_idx_width);
         let icon = match item.node.kind() {
             Directory(_) => {
@@ -59,8 +105,14 @@ pub fn render(state: &UiState) {
             format!("{:.1} MB", size as f64 / 1024.0 / 1024.0)
         };
 
+        let is_selected = index == cursor;
+        let (hl_start, hl_end) = if is_selected { ("\x1b[7m", "\x1b[0m") } else { ("", "") };
+        let selection = if is_selected { ">" } else { " " };
+
         println!(
-            "{} {}{} {} ({})",
+            "{}{} {}{} {} ({}){}{}",
+            hl_start,
+            selection,
             idx_str,
             prefix,
             icon,
@@ -69,9 +121,16 @@ pub fn render(state: &UiState) {
                 .file_name()
                 .unwrap_or_default()
                 .to_string_lossy(),
-            size_str
+            size_str,
+            hl_end
         );
     }
+
+    print!(
+        "\n[j/k] Move | [Enter/t] Toggle | [index] Toggle | [q] Quit | Index: {} > ",
+        state.input_buffer
+    );
+    io::stdout().flush().ok();
 }
 
 /// Prompts the user for input and parses it into an [`Action`].
@@ -84,21 +143,35 @@ pub fn render(state: &UiState) {
 /// This function will not panic under normal circumstances, but it may
 /// return an error if `stdin` is unavailable.
 pub fn get_input() -> anyhow::Result<Action> {
-    print!("\n[Index] Toggle Dir | [q] Quit > ");
-    io::stdout().flush()?;
+    loop {
+        match event::read()? {
+            Event::Key(key) => {
+                if key.kind == KeyEventKind::Release {
+                    continue;
+                }
 
-    let mut input = String::new();
-    io::stdin().read_line(&mut input)?;
-    let trimmed = input.trim();
+                use KeyCode::*;
 
-    match trimmed {
-        "q" | "Q" => Ok(Action::Quit),
-        num_str => {
-            if let Ok(index) = num_str.parse::<usize>() {
-                Ok(Toggle(index))
-            } else {
-                bail!("Invalid input: '{}'", num_str)
+                match key.code {
+                    Up => return Ok(Action::MoveUp),
+                    Down => return Ok(Action::MoveDown),
+                    Enter => return Ok(Action::Enter),
+                    Backspace => return Ok(Action::InputBackspace),
+                    Char('q' | 'Q') => return Ok(Action::Quit),
+                    Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                        return Ok(Action::Quit);
+                    }
+                    Char('j' | 'J') => return Ok(Action::MoveDown),
+                    Char('k' | 'K') => return Ok(Action::MoveUp),
+                    Char('t' | 'T') => return Ok(Action::ToggleAtCursor),
+                    Char(ch) if ch.is_ascii_digit() => return Ok(Action::InputDigit(ch)),
+                    _ => {}
+                }
             }
+            Event::Resize(_, _) => {
+                // Ignore
+            }
+            _ => {}
         }
     }
 }

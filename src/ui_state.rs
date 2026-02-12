@@ -9,10 +9,15 @@ use anyhow::bail;
 /// Actions for [`UiState::update`].
 pub enum Action {
     Toggle(usize),
+    ToggleAtCursor,
+    MoveUp,
+    MoveDown,
+    Enter,
+    InputDigit(char),
+    InputBackspace,
     Quit,
 }
 
-/// Items to be displayed.
 pub struct ViewItem<'a> {
     pub node: &'a Node,
     pub depth: usize,
@@ -26,6 +31,12 @@ pub struct UiState<'a> {
     pub root: &'a Node,
     /// List of nodes currently shown as "expanded".
     pub expanded_nodes: Vec<&'a Node>,
+    /// Current selected row index in the flattened view.
+    pub cursor: usize,
+    /// Max rows to render in one screenful.
+    pub viewport_height: usize,
+    /// Pending numeric input for index toggle.
+    pub input_buffer: String,
 }
 
 impl<'a> UiState<'a> {
@@ -34,6 +45,9 @@ impl<'a> UiState<'a> {
         Self {
             root,
             expanded_nodes: vec![root],
+            cursor: 0,
+            viewport_height: 20,
+            input_buffer: String::new(),
         }
     }
 
@@ -58,6 +72,28 @@ impl<'a> UiState<'a> {
                 self.collect_recursive(child, depth + 1, items);
             }
         }
+    }
+
+    /// Moves the cursor by a delta and clamps it within the view length.
+    fn move_cursor(&mut self, delta: isize, view_len: usize) {
+        if view_len == 0 {
+            self.cursor = 0;
+            return;
+        }
+
+        let new_cursor = if delta < 0 {
+            self.cursor.saturating_sub(delta.unsigned_abs() as usize)
+        } else {
+            let step = delta as usize;
+            (self.cursor + step).min(view_len - 1)
+        };
+
+        self.cursor = new_cursor;
+    }
+
+    /// Toggles the directory at the current cursor position.
+    fn toggle_at_cursor(&mut self) -> anyhow::Result<()> {
+        self.toggle_by_index(self.cursor)
     }
 
     /// Logic for toggling a directory node by its row index in the current view.
@@ -86,6 +122,11 @@ impl<'a> UiState<'a> {
             }
         }
 
+        let view_len = self.flatten_view().len();
+        if self.cursor >= view_len {
+            self.cursor = view_len.saturating_sub(1);
+        }
+
         Ok(())
     }
 
@@ -98,9 +139,49 @@ impl<'a> UiState<'a> {
     /// # Errors
     /// Returns an error if the action (e.g., toggling an index) is invalid.
     pub fn update(&mut self, action: Action) -> anyhow::Result<bool> {
+        let view_len = self.flatten_view().len();
+
         match action {
+            Action::MoveUp => {
+                self.input_buffer.clear();
+                self.move_cursor(-1, view_len);
+                Ok(true)
+            }
+            Action::MoveDown => {
+                self.input_buffer.clear();
+                self.move_cursor(1, view_len);
+                Ok(true)
+            }
+            Action::ToggleAtCursor => {
+                self.input_buffer.clear();
+                self.toggle_at_cursor()?;
+                Ok(true)
+            }
             Action::Toggle(index) => {
+                self.input_buffer.clear();
                 self.toggle_by_index(index)?;
+                self.cursor = index.min(self.flatten_view().len().saturating_sub(1));
+                Ok(true)
+            }
+            Action::Enter => {
+                if self.input_buffer.is_empty() {
+                    self.toggle_at_cursor()?;
+                } else {
+                    let index: usize = self.input_buffer.parse()?;
+                    self.toggle_by_index(index)?;
+                    self.cursor = index.min(self.flatten_view().len().saturating_sub(1));
+                }
+                self.input_buffer.clear();
+                Ok(true)
+            }
+            Action::InputDigit(ch) => {
+                if ch.is_ascii_digit() {
+                    self.input_buffer.push(ch);
+                }
+                Ok(true)
+            }
+            Action::InputBackspace => {
+                self.input_buffer.pop();
                 Ok(true)
             }
             Action::Quit => Ok(false),
