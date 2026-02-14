@@ -20,16 +20,7 @@ impl Drop for RawModeGuard {
     }
 }
 
-pub fn enter_raw_mode() -> anyhow::Result<RawModeGuard> {
-    terminal::enable_raw_mode()?;
-    Ok(RawModeGuard)
-}
-
 /// Returns terminal height in rows
-pub fn terminal_height() -> Option<usize> {
-    terminal::size().ok().map(|(_, rows)| rows as usize)
-}
-
 /// Renders the current file tree to the standard output.
 ///
 /// This function calculates the necessary padding for indices to ensure
@@ -106,28 +97,58 @@ pub fn render(state: &UiState) {
         };
 
         let is_selected = index == cursor;
-        let (hl_start, hl_end) = if is_selected { ("\x1b[7m", "\x1b[0m") } else { ("", "") };
+        let (hl_start, hl_end) = if is_selected {
+            (
+                state
+                    .theme
+                    .highlight_start
+                    .to_ansi()
+                    .unwrap_or_default(),
+                state.theme.highlight_end.to_ansi().unwrap_or_default(),
+            )
+        } else {
+            (String::new(), String::new())
+        };
         let selection = if is_selected { ">" } else { " " };
+        let name_color = match item.node.kind() {
+            Directory(_) => state.theme.dir.to_ansi().unwrap_or_default(),
+            File => state.theme.file.to_ansi().unwrap_or_default(),
+        };
+        let fg_reset = state.theme.fg_reset.to_ansi().unwrap_or_default();
 
         println!(
-            "{}{} {}{} {} ({}){}{}",
+            "{}{} {}{} {} {}{}{} ({}){}",
             hl_start,
             selection,
             idx_str,
             prefix,
             icon,
+            name_color,
             item.node
                 .path()
                 .file_name()
                 .unwrap_or_default()
                 .to_string_lossy(),
+            fg_reset,
             size_str,
             hl_end
         );
     }
 
+    if let Some(status) = &state.status {
+        let color = if status.is_error {
+            state.theme.error.to_ansi().unwrap_or_default()
+        } else {
+            String::new()
+        };
+        let reset = state.theme.reset.to_ansi().unwrap_or_default();
+        println!("{}{}{}", color, status.text, reset);
+    } else {
+        println!();
+    }
+
     print!(
-        "\n[j/k] Move | [Enter/t] Toggle | [index] Toggle | [q] Quit | Index: {} > ",
+        "[j/k] Move | [Enter/t] Toggle | [index] Toggle | [q] Quit | Index: {} > ",
         state.input_buffer
     );
     io::stdout().flush().ok();

@@ -1,0 +1,9 @@
+reset = { name = "reset" }
+fg_reset = { name = "fg_reset" }
+
+dir = { name = "blue" }
+file = { name = "white" }
+error = { name = "red" }
+
+highlight_start = { name = "invert" }
+highlight_end = { name = "reset" }

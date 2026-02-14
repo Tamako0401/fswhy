@@ -4,6 +4,7 @@
 //! and projects the hierarchical tree structure into a linear list for rendering.
 
 use crate::model::{Node, NodeKind::*};
+use crate::theme::Theme;
 use anyhow::bail;
 
 /// Actions for [`UiState::update`].
@@ -16,6 +17,12 @@ pub enum Action {
     InputDigit(char),
     InputBackspace,
     Quit,
+}
+
+#[derive(Clone, Debug)]
+pub struct StatusMessage {
+    pub text: String,
+    pub is_error: bool,
 }
 
 pub struct ViewItem<'a> {
@@ -37,17 +44,23 @@ pub struct UiState<'a> {
     pub viewport_height: usize,
     /// Pending numeric input for index toggle.
     pub input_buffer: String,
+    /// Status line message for hints/errors.
+    pub status: Option<StatusMessage>,
+    /// Theme for UI colors.
+    pub theme: Theme,
 }
 
 impl<'a> UiState<'a> {
     /// Creates a new UI state with the root node expanded by default.
-    pub fn new(root: &'a Node) -> Self {
+    pub fn new(root: &'a Node, theme: Theme) -> Self {
         Self {
             root,
             expanded_nodes: vec![root],
             cursor: 0,
             viewport_height: 20,
             input_buffer: String::new(),
+            status: None,
+            theme,
         }
     }
 
@@ -94,6 +107,17 @@ impl<'a> UiState<'a> {
     /// Toggles the directory at the current cursor position.
     fn toggle_at_cursor(&mut self) -> anyhow::Result<()> {
         self.toggle_by_index(self.cursor)
+    }
+
+    fn set_error(&mut self, message: impl Into<String>) {
+        self.status = Some(StatusMessage {
+            text: message.into(),
+            is_error: true,
+        });
+    }
+
+    fn clear_status(&mut self) {
+        self.status = None;
     }
 
     /// Logic for toggling a directory node by its row index in the current view.
@@ -144,32 +168,57 @@ impl<'a> UiState<'a> {
         match action {
             Action::MoveUp => {
                 self.input_buffer.clear();
+                self.clear_status();
                 self.move_cursor(-1, view_len);
                 Ok(true)
             }
             Action::MoveDown => {
                 self.input_buffer.clear();
+                self.clear_status();
                 self.move_cursor(1, view_len);
                 Ok(true)
             }
             Action::ToggleAtCursor => {
                 self.input_buffer.clear();
-                self.toggle_at_cursor()?;
+                match self.toggle_at_cursor() {
+                    Ok(()) => self.clear_status(),
+                    Err(e) => self.set_error(e.to_string()),
+                }
                 Ok(true)
             }
             Action::Toggle(index) => {
                 self.input_buffer.clear();
-                self.toggle_by_index(index)?;
-                self.cursor = index.min(self.flatten_view().len().saturating_sub(1));
+                match self.toggle_by_index(index) {
+                    Ok(()) => {
+                        self.cursor = index.min(self.flatten_view().len().saturating_sub(1));
+                        self.clear_status();
+                    }
+                    Err(e) => self.set_error(e.to_string()),
+                }
                 Ok(true)
             }
             Action::Enter => {
                 if self.input_buffer.is_empty() {
-                    self.toggle_at_cursor()?;
+                    match self.toggle_at_cursor() {
+                        Ok(()) => self.clear_status(),
+                        Err(e) => self.set_error(e.to_string()),
+                    }
                 } else {
-                    let index: usize = self.input_buffer.parse()?;
-                    self.toggle_by_index(index)?;
-                    self.cursor = index.min(self.flatten_view().len().saturating_sub(1));
+                    let index = match self.input_buffer.parse::<usize>() {
+                        Ok(index) => index,
+                        Err(_) => {
+                            self.set_error(format!("Invalid index: {}", self.input_buffer));
+                            self.input_buffer.clear();
+                            return Ok(true);
+                        }
+                    };
+                    match self.toggle_by_index(index) {
+                        Ok(()) => {
+                            self.cursor = index.min(self.flatten_view().len().saturating_sub(1));
+                            self.clear_status();
+                        }
+                        Err(e) => self.set_error(e.to_string()),
+                    }
                 }
                 self.input_buffer.clear();
                 Ok(true)
@@ -178,10 +227,12 @@ impl<'a> UiState<'a> {
                 if ch.is_ascii_digit() {
                     self.input_buffer.push(ch);
                 }
+                self.clear_status();
                 Ok(true)
             }
             Action::InputBackspace => {
                 self.input_buffer.pop();
+                self.clear_status();
                 Ok(true)
             }
             Action::Quit => Ok(false),

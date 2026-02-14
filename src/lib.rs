@@ -7,11 +7,13 @@
 
 use crate::model::Node;
 use crate::ui_state::UiState;
+use crate::theme::load_theme_from_env_or_default;
 use std::path::PathBuf;
 
 pub mod model;
 mod ui;
 mod ui_state;
+mod theme;
 
 /// The core application container.
 ///
@@ -32,7 +34,8 @@ impl App {
     }
     /// Creates a fresh [`UiState`] tied to the lifetime of the `App`'s node tree.
     fn create_ui_state(&self) -> UiState<'_> {
-        UiState::new(&self.node)
+        let theme = load_theme_from_env_or_default();
+        UiState::new(&self.node, theme)
     }
 
     /// Starts the main application loop.
