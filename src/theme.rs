@@ -22,6 +22,14 @@ pub(crate) struct Theme {
     pub(crate) highlight_start: Color,
     #[serde(default)]
     pub(crate) highlight_end: Color,
+    #[serde(default)]
+    pub(crate) dir_gradient_start: Color,
+    #[serde(default)]
+    pub(crate) dir_gradient_end: Color,
+    #[serde(default)]
+    pub(crate) file_gradient_start: Color,
+    #[serde(default)]
+    pub(crate) file_gradient_end: Color,
 }
 
 macro_rules! define_preset_colors {
@@ -29,6 +37,7 @@ macro_rules! define_preset_colors {
         $(
             $Name:ident => {
                 ansi: $ansi:expr,
+                rgb: ($r:expr, $g:expr, $b:expr),
                 aliases: [$($alias:expr),+ $(,)?]
             }
         ),+ $(,)?
@@ -42,6 +51,12 @@ macro_rules! define_preset_colors {
             pub(crate) fn to_ansi(self) -> &'static str {
                 match self {
                     $(PresetColor::$Name => $ansi),+
+                }
+            }
+
+            pub(crate) fn to_rgb(self) -> (u8, u8, u8) {
+                match self {
+                    $(PresetColor::$Name => ($r, $g, $b)),+
                 }
             }
 
@@ -61,42 +76,52 @@ macro_rules! define_preset_colors {
 define_preset_colors! {
     Reset => {
         ansi: "\x1b[0m",
+        rgb: (255, 255, 255),
         aliases: ["reset", "default"]
     },
     FgReset => {
         ansi: "\x1b[39m",
+        rgb: (255, 255, 255),
         aliases: ["fg_reset", "fgreset", "default_fg"]
     },
     Invert => {
         ansi: "\x1b[7m",
+        rgb: (255, 255, 255),
         aliases: ["invert", "reverse"]
     },
     Red => {
         ansi: "\x1b[31m",
+        rgb: (205, 49, 49),
         aliases: ["red"]
     },
     Yellow => {
         ansi: "\x1b[33m",
+        rgb: (229, 229, 16),
         aliases: ["yellow", "yel"]
     },
     Blue => {
         ansi: "\x1b[34m",
+        rgb: (36, 114, 200),
         aliases: ["blue"]
     },
     Green => {
         ansi: "\x1b[32m",
+        rgb: (13, 188, 121),
         aliases: ["green"]
     },
     Cyan => {
         ansi: "\x1b[36m",
+        rgb: (17, 168, 205),
         aliases: ["cyan"]
     },
     Magenta => {
         ansi: "\x1b[35m",
+        rgb: (188, 63, 188),
         aliases: ["magenta", "purple"]
     },
     White => {
         ansi: "\x1b[37m",
+        rgb: (229, 229, 229),
         aliases: ["white"]
     },
 }
@@ -132,6 +157,10 @@ impl Default for Theme {
             highlight_end: Color::Preset {
                 name: "reset".to_string(),
             },
+            dir_gradient_start: Color::RGB { r: 58, g: 123, b: 213 },
+            dir_gradient_end: Color::RGB { r: 0, g: 210, b: 255 },
+            file_gradient_start: Color::RGB { r: 180, g: 180, b: 180 },
+            file_gradient_end: Color::RGB { r: 255, g: 200, b: 120 },
         }
     }
 }
@@ -141,6 +170,35 @@ impl Default for Color {
         Color::Preset {
             name: "reset".to_string(),
         }
+    }
+}
+
+impl Color {
+    pub(crate) fn to_ansi(&self) -> anyhow::Result<String> {
+        match self {
+            Color::Preset { name } => {
+                let preset = PresetColor::parse(name)?;
+                Ok(preset.to_ansi().to_string())
+            }
+            Color::RGB { r, g, b } => Ok(format!("\x1b[38;2;{};{};{}m", r, g, b)),
+        }
+    }
+
+    pub(crate) fn to_rgb(&self) -> anyhow::Result<(u8, u8, u8)> {
+        match self {
+            Color::Preset { name } => {
+                let preset = PresetColor::parse(name)?;
+                Ok(preset.to_rgb())
+            }
+            Color::RGB { r, g, b } => Ok((*r, *g, *b)),
+        }
+    }
+
+    fn validate(&self) -> anyhow::Result<()> {
+        if let Color::Preset { name } = self {
+            PresetColor::parse(name)?;
+        }
+        Ok(())
     }
 }
 
@@ -160,25 +218,10 @@ impl Theme {
         self.error.validate()?;
         self.highlight_start.validate()?;
         self.highlight_end.validate()?;
-        Ok(())
-    }
-}
-
-impl Color {
-    pub(crate) fn to_ansi(&self) -> anyhow::Result<String> {
-        match self {
-            Color::Preset { name } => {
-                let preset = PresetColor::parse(name)?;
-                Ok(preset.to_ansi().to_string())
-            }
-            Color::RGB { r, g, b } => Ok(format!("\x1b[38;2;{};{};{}m", r, g, b)),
-        }
-    }
-
-    fn validate(&self) -> anyhow::Result<()> {
-        if let Color::Preset { name } = self {
-            PresetColor::parse(name)?;
-        }
+        self.dir_gradient_start.validate()?;
+        self.dir_gradient_end.validate()?;
+        self.file_gradient_start.validate()?;
+        self.file_gradient_end.validate()?;
         Ok(())
     }
 }

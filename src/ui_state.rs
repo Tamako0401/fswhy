@@ -16,7 +16,14 @@ pub enum Action {
     Enter,
     InputDigit(char),
     InputBackspace,
+    ToggleSort,
     Quit,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SortMode {
+    NameAsc,
+    SizeDesc,
 }
 
 #[derive(Clone, Debug)]
@@ -48,6 +55,8 @@ pub struct UiState<'a> {
     pub status: Option<StatusMessage>,
     /// Theme for UI colors.
     pub theme: Theme,
+    /// Current sorting mode for children.
+    pub sort_mode: SortMode,
 }
 
 impl<'a> UiState<'a> {
@@ -61,6 +70,7 @@ impl<'a> UiState<'a> {
             input_buffer: String::new(),
             status: None,
             theme,
+            sort_mode: SortMode::SizeDesc,
         }
     }
 
@@ -81,9 +91,25 @@ impl<'a> UiState<'a> {
         if let Directory(prop) = node.kind()
             && self.expanded_nodes.contains(&node)
         {
-            for child in prop.children() {
+            let mut children: Vec<&Node> = prop.children().iter().collect();
+            children.sort_by(|a, b| self.compare_nodes(a, b));
+            for child in children {
                 self.collect_recursive(child, depth + 1, items);
             }
+        }
+    }
+
+    fn compare_nodes(&self, a: &Node, b: &Node) -> std::cmp::Ordering {
+        match (a.kind(), b.kind()) {
+            (Directory(_), File) => std::cmp::Ordering::Less,
+            (File, Directory(_)) => std::cmp::Ordering::Greater,
+            _ => match self.sort_mode {
+                SortMode::NameAsc => a.path().cmp(b.path()),
+                SortMode::SizeDesc => b
+                    .size()
+                    .cmp(&a.size())
+                    .then_with(|| a.path().cmp(b.path())),
+            },
         }
     }
 
@@ -233,6 +259,15 @@ impl<'a> UiState<'a> {
             Action::InputBackspace => {
                 self.input_buffer.pop();
                 self.clear_status();
+                Ok(true)
+            }
+            Action::ToggleSort => {
+                self.input_buffer.clear();
+                self.clear_status();
+                self.sort_mode = match self.sort_mode {
+                    SortMode::NameAsc => SortMode::SizeDesc,
+                    SortMode::SizeDesc => SortMode::NameAsc,
+                };
                 Ok(true)
             }
             Action::Quit => Ok(false),

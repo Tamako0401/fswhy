@@ -7,3 +7,8 @@ error = { name = "red" }
 
 highlight_start = { name = "invert" }
 highlight_end = { name = "reset" }
+
+dir_gradient_start = { r = 58, g = 123, b = 213 }
+dir_gradient_end = { r = 0, g = 210, b = 255 }
+file_gradient_start = { r = 180, g = 180, b = 180 }
+file_gradient_end = { r = 255, g = 200, b = 120 }

@@ -4,7 +4,7 @@
 //! terminal interface and converts raw user keystrokes into actionable [`Action`]s.
 
 use crate::model::NodeKind::*;
-use crate::ui_state::{Action, UiState};
+use crate::ui_state::{Action, SortMode, UiState};
 
 use crossterm::event::{self, Event, KeyCode, KeyEventKind, KeyModifiers};
 use crossterm::terminal;
@@ -60,6 +60,9 @@ pub fn render(state: &UiState) {
     let remaining_above = start;
     let remaining_below = total.saturating_sub(end);
 
+    let (dir_min, dir_max) = size_range(&view, true).unwrap_or((0, 0));
+    let (file_min, file_max) = size_range(&view, false).unwrap_or((0, 0));
+
     // Cls and move cursor to home
     print!("\x1b[2J\x1b[H");
 
@@ -111,8 +114,22 @@ pub fn render(state: &UiState) {
         };
         let selection = if is_selected { ">" } else { " " };
         let name_color = match item.node.kind() {
-            Directory(_) => state.theme.dir.to_ansi().unwrap_or_default(),
-            File => state.theme.file.to_ansi().unwrap_or_default(),
+            Directory(_) => gradient_color(
+                size,
+                dir_min,
+                dir_max,
+                &state.theme.dir_gradient_start,
+                &state.theme.dir_gradient_end,
+                &state.theme.dir,
+            ),
+            File => gradient_color(
+                size,
+                file_min,
+                file_max,
+                &state.theme.file_gradient_start,
+                &state.theme.file_gradient_end,
+                &state.theme.file,
+            ),
         };
         let fg_reset = state.theme.fg_reset.to_ansi().unwrap_or_default();
 
@@ -147,11 +164,66 @@ pub fn render(state: &UiState) {
         println!();
     }
 
+    let sort_label = match state.sort_mode {
+        SortMode::NameAsc => "name",
+        SortMode::SizeDesc => "size",
+    };
     print!(
-        "[j/k] Move | [Enter/t] Toggle | [index] Toggle | [q] Quit | Index: {} > ",
+        "[j/k] Move | [Enter/t] Toggle | [index] Toggle | [s] Sort({}) | [q] Quit | Index: {} > ",
+        sort_label,
         state.input_buffer
     );
     io::stdout().flush().ok();
+}
+
+fn size_range(view: &[crate::ui_state::ViewItem<'_>], want_dir: bool) -> Option<(u64, u64)> {
+    let mut min = None;
+    let mut max = None;
+
+    for item in view {
+        let is_dir = matches!(item.node.kind(), Directory(_));
+        if is_dir != want_dir {
+            continue;
+        }
+        let size = item.node.size();
+        min = Some(min.map_or(size, |m: u64| m.min(size)));
+        max = Some(max.map_or(size, |m: u64| m.max(size)));
+
+    }
+
+    match (min, max) {
+        (Some(min), Some(max)) => Some((min, max)),
+        _ => None,
+    }
+}
+
+fn gradient_color(
+    size: u64,
+    min: u64,
+    max: u64,
+    start: &crate::theme::Color,
+    end: &crate::theme::Color,
+    fallback: &crate::theme::Color,
+) -> String {
+    let start_rgb = start.to_rgb().ok();
+    let end_rgb = end.to_rgb().ok();
+    if let (Some(start_rgb), Some(end_rgb)) = (start_rgb, end_rgb) {
+        let t = if max <= min {
+            0.0
+        } else {
+            (size.saturating_sub(min)) as f64 / (max - min) as f64
+        };
+        let (r, g, b) = lerp_rgb(start_rgb, end_rgb, t);
+        return format!("\x1b[38;2;{};{};{}m", r, g, b);
+    }
+
+    fallback.to_ansi().unwrap_or_default()
+}
+
+fn lerp_rgb(start: (u8, u8, u8), end: (u8, u8, u8), t: f64) -> (u8, u8, u8) {
+    let t = t.clamp(0.0, 1.0);
+    let lerp = |a: u8, b: u8| -> u8 { ((a as f64) + (b as f64 - a as f64) * t).round() as u8 };
+    (lerp(start.0, end.0), lerp(start.1, end.1), lerp(start.2, end.2))
 }
 
 /// Prompts the user for input and parses it into an [`Action`].
@@ -185,6 +257,7 @@ pub fn get_input() -> anyhow::Result<Action> {
                     Char('j' | 'J') => return Ok(Action::MoveDown),
                     Char('k' | 'K') => return Ok(Action::MoveUp),
                     Char('t' | 'T') => return Ok(Action::ToggleAtCursor),
+                    Char('s' | 'S') => return Ok(Action::ToggleSort),
                     Char(ch) if ch.is_ascii_digit() => return Ok(Action::InputDigit(ch)),
                     _ => {}
                 }
