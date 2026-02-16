@@ -1,18 +1,12 @@
-//! Data structures representing the file system hierarchy.
+//! 文件系统数据模型
 //!
-//! This module provides the [`Node`] struct, which recursively captures
-//! file and directory information, and a [`Node::scan`] method to build
-//! the tree from the actual file system.
+//! 本模块提供了 [`Node`] 结构体，用于递归表示文件和目录信息，并提供 [`Node::scan`] 方法从实际文件系统构建树形结构。
 
 use crate::model::NodeKind::*;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Instant;
 
-/// A single entity in the file system tree (either a file or a directory).
-///
-/// Nodes store essential metadata such as path and size. For directories,
-/// the size is the cumulative sum of all descendant nodes.
 #[derive(PartialOrd, PartialEq, Debug)]
 pub struct Node {
     path: PathBuf,
@@ -20,7 +14,6 @@ pub struct Node {
     kind: NodeKind,
 }
 
-/// Specialized data specific to the type of the [`Node`].
 #[derive(PartialOrd, PartialEq, Debug)]
 pub enum NodeKind {
     File,
@@ -51,20 +44,17 @@ impl Node {
         &self.kind
     }
 
-    /// Recursively scans the filesystem starting from the given path.
+    /// 递归扫描文件系统，构建节点树
     ///
-    /// This method builds a tree of [`Node`]s. It calculates the total size
-    /// of directories by summing up their children and sorts entries
-    /// based on a specific priority:
-    /// 1. Directories come before files.
-    /// 2. Entries of the same type are sorted alphabetically by path.
-    /// Progress is displayed to stderr during scanning:
-    /// - Shows progress every 100 items scanned
-    /// - Displays detailed statistics for top-level directories
+    /// 此方法构建 [`Node`] 树。通过对子节点的大小求和来计算目录的总大小，并根据特定优先级对条目进行排序：
+    /// 1. 目录优先于文件。
+    /// 2. 同类型条目按路径字母顺序排序。
+    /// 扫描过程中会将进度信息显示到标准错误输出：
+    /// - 每扫描 100 项显示一次进度
+    /// - 顶层目录会显示详细统计信息
     ///
-    /// # Errors
-    /// Returns an error if the path does not exist or if permissions are
-    /// insufficient to read the directory.
+    /// # 错误
+    /// 如果路径不存在或权限不足以读取目录，则返回错误。
     pub fn scan(path: PathBuf) -> anyhow::Result<Node> {
         // 全局计数器，跨所有层级统计
         static TOTAL_COUNT: AtomicUsize = AtomicUsize::new(0);
@@ -76,25 +66,22 @@ impl Node {
         result
     }
 
-    /// Internal recursive scan implementation with progress tracking.
+    /// 带进度显示的递归扫描
     ///
-    /// This method is called by [`scan`](Self::scan) and recursively builds
-    /// the directory tree while updating a global atomic counter for progress
-    /// display.
+    /// 此方法由 [`scan`](Self::scan) 调用，递归构建目录树，同时更新全局原子计数器以显示进度。
     ///
-    /// # Arguments
-    /// * `path` - The filesystem path to scan
-    /// * `depth` - Current recursion depth (0 for root)
-    /// * `total_count` - Shared atomic counter for tracking total scanned items
+    /// # 参数
+    /// * `path` - 要扫描的文件系统路径
+    /// * `depth` - 当前递归深度（根目录为 0）
+    /// * `total_count` - 用于跟踪扫描总项数的共享原子计数器
     ///
-    /// # Progress Display
-    /// - Shows incremental progress every 100 items to stderr
-    /// - Displays detailed statistics (dir/file count, size, time) for directories
-    ///   at depth 0 or 1 to avoid excessive output
+    /// # 进度显示
+    /// - 每扫描 100 项向标准错误输出显示一次进度
+    /// - 对于深度为 0 或 1 的目录，显示详细统计信息（目录/文件计数、大小、时间），以避免输出过多信息
     ///
-    /// # Error Handling
-    /// - Skips inaccessible entries and continues scanning
-    /// - Logs errors to stderr only for top-level entries (depth ≤ 1)
+    /// # 错误处理
+    /// - 跳过无法访问的条目，继续扫描
+    /// - 仅对顶层条目（深度 ≤ 1）记录错误到标准错误输出
     fn scan_with_progress(
         path: PathBuf,
         depth: usize,
@@ -122,12 +109,14 @@ impl Node {
 
                         let count = total_count.fetch_add(1, Ordering::Relaxed) + 1;
 
+                        // 每100项显示进度
                         if count % 100 == 0 {
                             eprint!("\rScanned {} items...", count);
                             std::io::Write::flush(&mut std::io::stderr()).ok();
                         }
                     }
                     Err(e) => {
+                        // 仅顶层目录打印错误
                         if depth <= 1 {
                             eprintln!("\n✗ Skipped: {}", e);
                         }
@@ -135,16 +124,16 @@ impl Node {
                 }
             }
 
-            children.sort_by(|a, b| {
-                match (&a.kind, &b.kind) {
-                    (Directory(_), File) => std::cmp::Ordering::Less,
-                    (File, Directory(_)) => std::cmp::Ordering::Greater,
-                    _ => a.path.cmp(&b.path),
-                }
+            // 目录优先，按路径排序
+            children.sort_by(|a, b| match (&a.kind, &b.kind) {
+                (Directory(_), File) => std::cmp::Ordering::Less,
+                (File, Directory(_)) => std::cmp::Ordering::Greater,
+                _ => a.path.cmp(&b.path),
             });
 
             let total_size: u64 = children.iter().map(|c| c.size).sum();
 
+            // 顶层目录打印统计
             if depth <= 1 {
                 eprintln!(
                     "\n✓ {} ({} dirs, {} files, {:.1} MB) in {:.2}s",

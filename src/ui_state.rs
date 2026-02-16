@@ -1,66 +1,58 @@
-//! Logic for managing the UI state of the file explorer.
+//! UI状态管理
 //!
-//! This module provides [`UiState`], which tracks which nodes are expanded
-//! and projects the hierarchical tree structure into a linear list for rendering.
+//! 本模块提供了 [`UiState`]，用于跟踪节点的展开状态，并将层次树结构投影到线性列表中以便渲染。
 
 use crate::model::{Node, NodeKind::*};
 use crate::theme::Theme;
 use anyhow::bail;
 
-/// Actions for [`UiState::update`].
+/// UI动作
 pub enum Action {
-    Toggle(usize),
-    ToggleAtCursor,
-    MoveUp,
-    MoveDown,
-    Enter,
-    InputDigit(char),
-    InputBackspace,
-    ToggleSort,
-    Quit,
+    Toggle(usize),      // 按索引切换
+    ToggleAtCursor,     // 切换光标处
+    MoveUp,             // 上移
+    MoveDown,           // 下移
+    Enter,              // 确认
+    InputDigit(char),   // 输入数字
+    InputBackspace,     // 退格
+    ToggleSort,         // 切换排序
+    Quit,               // 退出
 }
 
+/// 排序模式
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SortMode {
-    NameAsc,
-    SizeDesc,
+    NameAsc,  // 按名称升序
+    SizeDesc, // 按大小降序
 }
 
+/// 状态消息
 #[derive(Clone, Debug)]
 pub struct StatusMessage {
     pub text: String,
     pub is_error: bool,
 }
 
+/// 视图项
 pub struct ViewItem<'a> {
     pub node: &'a Node,
     pub depth: usize,
 }
 
-/// Represents the visual state of the tree at a given moment.
-///
-/// It maintains references to the original [`Node`] tree and keeps track of
-/// which directory nodes are currently expanded in the view.
+/// UI状态
 pub struct UiState<'a> {
     pub root: &'a Node,
-    /// List of nodes currently shown as "expanded".
-    pub expanded_nodes: Vec<&'a Node>,
-    /// Current selected row index in the flattened view.
-    pub cursor: usize,
-    /// Max rows to render in one screenful.
-    pub viewport_height: usize,
-    /// Pending numeric input for index toggle.
-    pub input_buffer: String,
-    /// Status line message for hints/errors.
-    pub status: Option<StatusMessage>,
-    /// Theme for UI colors.
-    pub theme: Theme,
-    /// Current sorting mode for children.
-    pub sort_mode: SortMode,
+    pub expanded_nodes: Vec<&'a Node>, // 已展开节点
+    pub cursor: usize,                 // 光标位置
+    pub viewport_height: usize,        // 视口高度
+    pub input_buffer: String,          // 输入缓冲
+    pub status: Option<StatusMessage>, // 状态消息
+    pub theme: Theme,                  // 主题
+    pub sort_mode: SortMode,           // 排序模式
 }
 
 impl<'a> UiState<'a> {
-    /// Creates a new UI state with the root node expanded by default.
+    /// 创建新状态，默认展开根节点
     pub fn new(root: &'a Node, theme: Theme) -> Self {
         Self {
             root,
@@ -74,17 +66,14 @@ impl<'a> UiState<'a> {
         }
     }
 
-    /// Projects the tree structure into a flat list of visible items.
-    ///
-    /// This takes the expansion state into account, only including children of
-    /// nodes present in `expanded_nodes`.
+    /// 展平树为可见项列表
     pub fn flatten_view(&self) -> Vec<ViewItem<'a>> {
         let mut items = Vec::new();
         self.collect_recursive(self.root, 0, &mut items);
         items
     }
 
-    /// Recursively collects visible nodes into a flat vector.
+    /// 递归收集可见节点
     fn collect_recursive(&self, node: &'a Node, depth: usize, items: &mut Vec<ViewItem<'a>>) {
         items.push(ViewItem { node, depth });
 
@@ -99,42 +88,38 @@ impl<'a> UiState<'a> {
         }
     }
 
+    /// 比较节点（目录优先，再按排序模式）
     fn compare_nodes(&self, a: &Node, b: &Node) -> std::cmp::Ordering {
         match (a.kind(), b.kind()) {
             (Directory(_), File) => std::cmp::Ordering::Less,
             (File, Directory(_)) => std::cmp::Ordering::Greater,
             _ => match self.sort_mode {
                 SortMode::NameAsc => a.path().cmp(b.path()),
-                SortMode::SizeDesc => b
-                    .size()
-                    .cmp(&a.size())
-                    .then_with(|| a.path().cmp(b.path())),
+                SortMode::SizeDesc => b.size().cmp(&a.size()).then_with(|| a.path().cmp(b.path())),
             },
         }
     }
 
-    /// Moves the cursor by a delta and clamps it within the view length.
+    /// 移动光标
     fn move_cursor(&mut self, delta: isize, view_len: usize) {
         if view_len == 0 {
             self.cursor = 0;
             return;
         }
-
         let new_cursor = if delta < 0 {
-            self.cursor.saturating_sub(delta.unsigned_abs() as usize)
+            self.cursor.saturating_sub(delta.unsigned_abs())
         } else {
-            let step = delta as usize;
-            (self.cursor + step).min(view_len - 1)
+            (self.cursor + delta as usize).min(view_len - 1)
         };
-
         self.cursor = new_cursor;
     }
 
-    /// Toggles the directory at the current cursor position.
+    /// 切换光标处目录
     fn toggle_at_cursor(&mut self) -> anyhow::Result<()> {
         self.toggle_by_index(self.cursor)
     }
 
+    /// 设置错误消息
     fn set_error(&mut self, message: impl Into<String>) {
         self.status = Some(StatusMessage {
             text: message.into(),
@@ -142,52 +127,38 @@ impl<'a> UiState<'a> {
         });
     }
 
+    /// 清除状态消息
     fn clear_status(&mut self) {
         self.status = None;
     }
 
-    /// Logic for toggling a directory node by its row index in the current view.
+    /// 按索引切换目录展开/折叠
     fn toggle_by_index(&mut self, index: usize) -> anyhow::Result<()> {
         let view = self.flatten_view();
-
         let item = view
             .get(index)
             .ok_or_else(|| anyhow::anyhow!("Index {index} not found!"))?;
         let target_node = item.node;
 
         if let File = target_node.kind() {
-            bail!("{target_node:?} cannot be toggled because it is a file.");
+            bail!("Cannot toggle file");
         }
 
-        let pos = self.expanded_nodes.iter().position(|&x| x == target_node);
-        // remove if expanded, push if collapsed.
-        match pos {
-            Some(idx) => {
-                // 已存在 -> 移除（折叠）
-                self.expanded_nodes.remove(idx);
-            }
-            None => {
-                // 不存在 -> 添加（展开）
-                self.expanded_nodes.push(target_node);
-            }
+        // 切换展开状态
+        match self.expanded_nodes.iter().position(|&x| x == target_node) {
+            Some(idx) => { self.expanded_nodes.remove(idx); }
+            None => { self.expanded_nodes.push(target_node); }
         }
 
+        // 调整光标
         let view_len = self.flatten_view().len();
         if self.cursor >= view_len {
             self.cursor = view_len.saturating_sub(1);
         }
-
         Ok(())
     }
 
-    /// Updates the UI state based on the provided [`Action`].
-    ///
-    /// # Returns
-    /// - `Ok(true)`: The state was updated and the application should continue.
-    /// - `Ok(false)`: The user requested to quit.
-    ///
-    /// # Errors
-    /// Returns an error if the action (e.g., toggling an index) is invalid.
+    /// 处理动作，返回是否继续运行
     pub fn update(&mut self, action: Action) -> anyhow::Result<bool> {
         let view_len = self.flatten_view().len();
 
@@ -231,9 +202,9 @@ impl<'a> UiState<'a> {
                     }
                 } else {
                     let index = match self.input_buffer.parse::<usize>() {
-                        Ok(index) => index,
+                        Ok(i) => i,
                         Err(_) => {
-                            self.set_error(format!("Invalid index: {}", self.input_buffer));
+                            self.set_error(format!("Invalid: {}", self.input_buffer));
                             self.input_buffer.clear();
                             return Ok(true);
                         }

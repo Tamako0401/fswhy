@@ -1,17 +1,16 @@
-//! UI rendering and input handling logic.
+//! UI渲染与输入处理
 //!
-//! This module translates the internal [`UiState`] into a human-readable
-//! terminal interface and converts raw user keystrokes into actionable [`Action`]s.
+//! 本模块将内部的 [`UiState`] 转换为人类可读的终端界面，并将原始用户按键转换为可操作的 [`Action`]。
 
 use crate::model::NodeKind::*;
-use crate::ui_state::{Action, SortMode, UiState};
+use crate::theme::Color;
+use crate::ui_state::{Action, SortMode, UiState, ViewItem};
 
 use crossterm::event::{self, Event, KeyCode, KeyEventKind, KeyModifiers};
 use crossterm::terminal;
-use std::io;
-use std::io::Write;
+use std::io::{self, Write};
 
-/// Enables raw mode for immediate key handling and restores it on drop.
+/// raw mode守卫，析构时恢复
 pub struct RawModeGuard;
 
 impl Drop for RawModeGuard {
@@ -20,52 +19,34 @@ impl Drop for RawModeGuard {
     }
 }
 
-/// Returns terminal height in rows
-/// Renders the current file tree to the standard output.
-///
-/// This function calculates the necessary padding for indices to ensure
-/// vertical alignment and formats file sizes into human-readable units
-/// (B, KB, MB).
-/// ```text
-/// --- File Tree (Total: 9) ---
-/// 0 [-] fswhy (45.9 MB)
-/// 1   [+] .git (36.3 KB)
-/// 2   [+] .idea (8.1 KB)
-/// 3   [+] src (7.4 KB)
-/// 4   [+] target (45.8 MB)
-/// 5       .gitignore (14 B)
-/// 6       Cargo.lock (371 B)
-/// 7       Cargo.toml (88 B)
-/// 8       README.md (607 B)
-/// ```
-/// # Arguments
-/// * `state` - A reference to the [`UiState`] containing the tree data and
-///   the set of expanded nodes.
+/// 渲染文件树
 pub fn render(state: &UiState) {
     let view = state.flatten_view();
     let total = view.len();
     let max_idx_width = total.saturating_sub(1).to_string().len().max(1);
     let height = state.viewport_height.max(1);
 
+    // 计算视口范围
     let cursor = state.cursor.min(total.saturating_sub(1));
     let start = if total <= height {
         0
     } else if cursor + 1 <= height {
         0
     } else {
-        let max_start = total.saturating_sub(height);
-        (cursor + 1 - height).min(max_start)
+        (cursor + 1 - height).min(total.saturating_sub(height))
     };
     let end = (start + height).min(total);
     let remaining_above = start;
     let remaining_below = total.saturating_sub(end);
 
+    // 计算大小范围（用于渐变色）
     let (dir_min, dir_max) = size_range(&view, true).unwrap_or((0, 0));
     let (file_min, file_max) = size_range(&view, false).unwrap_or((0, 0));
 
-    // Cls and move cursor to home
+    // 清屏
     print!("\x1b[2J\x1b[H");
 
+    // 标题
     println!(
         "--- File Tree (Total: {}, Showing: {}-{}) ---",
         total,
@@ -73,9 +54,13 @@ pub fn render(state: &UiState) {
         end.saturating_sub(1)
     );
     if remaining_above > 0 || remaining_below > 0 {
-        println!("(More: above {}, below {})", remaining_above, remaining_below);
+        println!(
+            "(More: above {}, below {})",
+            remaining_above, remaining_below
+        );
     }
 
+    // 渲染每一行
     for (index, item) in view.iter().enumerate().skip(start).take(end - start) {
         let prefix = "  ".repeat(item.depth);
         let idx_str = format!("{:width$}", index, width = max_idx_width);
@@ -91,28 +76,20 @@ pub fn render(state: &UiState) {
         };
 
         let size = item.node.size();
-        let size_str = if size < 1024 {
-            format!("{} B", size)
-        } else if size < 1024 * 1024 {
-            format!("{:.1} KB", size as f64 / 1024.0)
-        } else {
-            format!("{:.1} MB", size as f64 / 1024.0 / 1024.0)
-        };
+        let size_str = format_size(size);
 
         let is_selected = index == cursor;
         let (hl_start, hl_end) = if is_selected {
             (
-                state
-                    .theme
-                    .highlight_start
-                    .to_ansi()
-                    .unwrap_or_default(),
+                state.theme.highlight_start.to_ansi().unwrap_or_default(),
                 state.theme.highlight_end.to_ansi().unwrap_or_default(),
             )
         } else {
             (String::new(), String::new())
         };
         let selection = if is_selected { ">" } else { " " };
+
+        // 渐变色
         let name_color = match item.node.kind() {
             Directory(_) => gradient_color(
                 size,
@@ -152,6 +129,7 @@ pub fn render(state: &UiState) {
         );
     }
 
+    // 状态栏
     if let Some(status) = &state.status {
         let color = if status.is_error {
             state.theme.error.to_ansi().unwrap_or_default()
@@ -164,21 +142,33 @@ pub fn render(state: &UiState) {
         println!();
     }
 
+    // 帮助栏
     let sort_label = match state.sort_mode {
         SortMode::NameAsc => "name",
         SortMode::SizeDesc => "size",
     };
     print!(
-        "[j/k] Move | [Enter/t] Toggle | [index] Toggle | [s] Sort({}) | [q] Quit | Index: {} > ",
-        sort_label,
-        state.input_buffer
+        "[j/k] Move | [Enter/t] Toggle | [s] Sort({}) | [q] Quit | Index: {} > ",
+        sort_label, state.input_buffer
     );
     io::stdout().flush().ok();
 }
 
-fn size_range(view: &[crate::ui_state::ViewItem<'_>], want_dir: bool) -> Option<(u64, u64)> {
-    let mut min = None;
-    let mut max = None;
+/// 格式化文件大小
+fn format_size(size: u64) -> String {
+    if size < 1024 {
+        format!("{} B", size)
+    } else if size < 1024 * 1024 {
+        format!("{:.1} KB", size as f64 / 1024.0)
+    } else {
+        format!("{:.1} MB", size as f64 / 1024.0 / 1024.0)
+    }
+}
+
+/// 计算大小范围
+fn size_range(view: &[ViewItem<'_>], want_dir: bool) -> Option<(u64, u64)> {
+    let mut min: Option<u64> = None;
+    let mut max: Option<u64> = None;
 
     for item in view {
         let is_dir = matches!(item.node.kind(), Directory(_));
@@ -186,86 +176,68 @@ fn size_range(view: &[crate::ui_state::ViewItem<'_>], want_dir: bool) -> Option<
             continue;
         }
         let size = item.node.size();
-        min = Some(min.map_or(size, |m: u64| m.min(size)));
-        max = Some(max.map_or(size, |m: u64| m.max(size)));
-
+        min = Some(min.map_or(size, |m| m.min(size)));
+        max = Some(max.map_or(size, |m| m.max(size)));
     }
 
-    match (min, max) {
-        (Some(min), Some(max)) => Some((min, max)),
-        _ => None,
-    }
+    min.zip(max)
 }
 
+/// 计算渐变色
 fn gradient_color(
     size: u64,
     min: u64,
     max: u64,
-    start: &crate::theme::Color,
-    end: &crate::theme::Color,
-    fallback: &crate::theme::Color,
+    start: &Color,
+    end: &Color,
+    fallback: &Color,
 ) -> String {
     let start_rgb = start.to_rgb().ok();
     let end_rgb = end.to_rgb().ok();
-    if let (Some(start_rgb), Some(end_rgb)) = (start_rgb, end_rgb) {
+
+    if let (Some(s), Some(e)) = (start_rgb, end_rgb) {
         let t = if max <= min {
             0.0
         } else {
-            (size.saturating_sub(min)) as f64 / (max - min) as f64
+            (size - min) as f64 / (max - min) as f64
         };
-        let (r, g, b) = lerp_rgb(start_rgb, end_rgb, t);
+        let (r, g, b) = lerp_rgb(s, e, t);
         return format!("\x1b[38;2;{};{};{}m", r, g, b);
     }
 
     fallback.to_ansi().unwrap_or_default()
 }
 
-fn lerp_rgb(start: (u8, u8, u8), end: (u8, u8, u8), t: f64) -> (u8, u8, u8) {
+/// RGB线性插值
+fn lerp_rgb(s: (u8, u8, u8), e: (u8, u8, u8), t: f64) -> (u8, u8, u8) {
     let t = t.clamp(0.0, 1.0);
-    let lerp = |a: u8, b: u8| -> u8 { ((a as f64) + (b as f64 - a as f64) * t).round() as u8 };
-    (lerp(start.0, end.0), lerp(start.1, end.1), lerp(start.2, end.2))
+    let lerp = |a: u8, b: u8| ((a as f64) + (b as f64 - a as f64) * t).round() as u8;
+    (lerp(s.0, e.0), lerp(s.1, e.1), lerp(s.2, e.2))
 }
 
-/// Prompts the user for input and parses it into an [`Action`].
-///
-/// # Errors
-/// Returns an error if the input is neither a quit command ('q') nor
-/// a valid numeric index.
-///
-/// # Panics
-/// This function will not panic under normal circumstances, but it may
-/// return an error if `stdin` is unavailable.
+/// 读取用户输入
 pub fn get_input() -> anyhow::Result<Action> {
     loop {
-        match event::read()? {
-            Event::Key(key) => {
-                if key.kind == KeyEventKind::Release {
-                    continue;
-                }
-
-                use KeyCode::*;
-
-                match key.code {
-                    Up => return Ok(Action::MoveUp),
-                    Down => return Ok(Action::MoveDown),
-                    Enter => return Ok(Action::Enter),
-                    Backspace => return Ok(Action::InputBackspace),
-                    Char('q' | 'Q') => return Ok(Action::Quit),
-                    Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                        return Ok(Action::Quit);
-                    }
-                    Char('j' | 'J') => return Ok(Action::MoveDown),
-                    Char('k' | 'K') => return Ok(Action::MoveUp),
-                    Char('t' | 'T') => return Ok(Action::ToggleAtCursor),
-                    Char('s' | 'S') => return Ok(Action::ToggleSort),
-                    Char(ch) if ch.is_ascii_digit() => return Ok(Action::InputDigit(ch)),
-                    _ => {}
-                }
+        if let Event::Key(key) = event::read()? {
+            if key.kind == KeyEventKind::Release {
+                continue;
             }
-            Event::Resize(_, _) => {
-                // Ignore
+
+            use KeyCode::*;
+            match key.code {
+                Up | Char('k' | 'K') => return Ok(Action::MoveUp),
+                Down | Char('j' | 'J') => return Ok(Action::MoveDown),
+                Enter => return Ok(Action::Enter),
+                Backspace => return Ok(Action::InputBackspace),
+                Char('q' | 'Q') => return Ok(Action::Quit),
+                Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                    return Ok(Action::Quit);
+                }
+                Char('t' | 'T') => return Ok(Action::ToggleAtCursor),
+                Char('s' | 'S') => return Ok(Action::ToggleSort),
+                Char(ch) if ch.is_ascii_digit() => return Ok(Action::InputDigit(ch)),
+                _ => {}
             }
-            _ => {}
         }
     }
 }

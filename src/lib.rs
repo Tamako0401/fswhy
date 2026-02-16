@@ -1,52 +1,34 @@
-//! Main application logic and control flow.
-//!
-//! This module orchestrates the entire application by:
-//! 1. Initializing the [`Node`] tree via filesystem scanning.
-//! 2. Managing the main event loop.
-//! 3. Bridging the data model with the UI rendering and state updates.
+//! 应用主入口与事件循环
 
 use crate::model::Node;
-use crate::ui_state::UiState;
 use crate::theme::load_theme_from_env_or_default;
+use crate::ui_state::UiState;
 use std::path::PathBuf;
 
 pub mod model;
+mod theme;
 mod ui;
 mod ui_state;
-mod theme;
 
-/// The core application container.
-///
-/// It owns the root [`Node`] tree, ensuring the data stays alive
-/// for the duration of the program.
+/// 应用容器，持有文件树根节点
 pub struct App {
     pub node: Node,
 }
 
 impl App {
-    /// Initializes the application by scanning the provided directory path.
-    ///
-    /// # Errors
-    /// Returns an error if the path is invalid or inaccessible.
+    /// 扫描指定路径并初始化应用
     pub fn new(path: PathBuf) -> anyhow::Result<Self> {
         let root = Node::scan(path)?;
         Ok(Self { node: root })
     }
-    /// Creates a fresh [`UiState`] tied to the lifetime of the `App`'s node tree.
+
+    /// 创建UI状态
     fn create_ui_state(&self) -> UiState<'_> {
         let theme = load_theme_from_env_or_default();
         UiState::new(&self.node, theme)
     }
 
-    /// Starts the main application loop.
-    ///
-    /// This method handles the "Render-Input-Update" cycle:
-    /// 1. Draws the current state to the terminal.
-    /// 2. Waits for and parses user input.
-    /// 3. Updates the UI state or exits based on user actions.
-    ///
-    /// # Errors
-    /// Returns an error if a fatal I/O or parsing issue occurs.
+    /// 主循环：渲染 → 输入 → 更新
     pub fn run(&self) -> anyhow::Result<()> {
         let mut state = self.create_ui_state();
         loop {
