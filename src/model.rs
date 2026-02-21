@@ -20,6 +20,12 @@ pub enum NodeKind {
     Directory(DirProperty),
 }
 
+impl NodeKind {
+    pub fn is_dir(&self) -> bool {
+        matches!(self, NodeKind::Directory(_))
+    }
+}
+
 #[derive(PartialOrd, PartialEq, Debug)]
 pub struct DirProperty {
     children: Vec<Node>,
@@ -91,38 +97,33 @@ impl Node {
         let meta = std::fs::metadata(&path)?;
 
         if meta.is_dir() {
-            let mut children = Vec::new();
-            let mut file_count = 0;
-            let mut dir_count = 0;
+            let mut children: Vec<Node> = std::fs::read_dir(&path)?
+                .filter_map(|entry_result| {
+                    entry_result
+                        .map_err(|e| {
+                            if depth <= 1 {
+                                eprintln!("\n✗ Skipped reading a directory entry: {}", e);
+                            }
+                            e
+                        })
+                        .ok()
+                })
+                .map(|entry| {
+                    let child_path = entry.path();
+                    let child_node = Self::scan_with_progress(child_path, depth + 1, total_count)?;
 
-            for entry in std::fs::read_dir(&path)? {
-                let entry = entry?;
-                let child_path = entry.path();
-
-                match Self::scan_with_progress(child_path, depth + 1, total_count) {
-                    Ok(child) => {
-                        match child.kind() {
-                            File => file_count += 1,
-                            Directory(_) => dir_count += 1,
-                        }
-                        children.push(child);
-
-                        let count = total_count.fetch_add(1, Ordering::Relaxed) + 1;
-
-                        // 每100项显示进度
-                        if count % 100 == 0 {
-                            eprint!("\rScanned {} items...", count);
-                            std::io::Write::flush(&mut std::io::stderr()).ok();
-                        }
+                    let count = total_count.fetch_add(1, Ordering::Relaxed) + 1;
+                    if count % 100 == 0 {
+                        eprint!("\rScanned {} items...", count);
+                        std::io::Write::flush(&mut std::io::stderr()).ok();
                     }
-                    Err(e) => {
-                        // 仅顶层目录打印错误
-                        if depth <= 1 {
-                            eprintln!("\n✗ Skipped: {}", e);
-                        }
-                    }
-                }
-            }
+
+                    Ok(child_node)
+                })
+                .collect::<anyhow::Result<Vec<Node>>>()?;
+
+            let dir_count = children.iter().filter(|c| c.kind.is_dir()).count();
+            let file_count = children.len() - dir_count;
 
             // 目录优先，按路径排序
             children.sort_by(|a, b| match (&a.kind, &b.kind) {

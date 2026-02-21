@@ -11,6 +11,7 @@ use crossterm::terminal;
 use std::io::{self, Write};
 
 /// raw mode守卫，析构时恢复
+#[allow(dead_code)]
 pub struct RawModeGuard;
 
 impl Drop for RawModeGuard {

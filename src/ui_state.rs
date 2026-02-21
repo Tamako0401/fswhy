@@ -7,6 +7,7 @@ use crate::theme::Theme;
 use anyhow::bail;
 
 /// UI动作
+#[allow(dead_code)]
 pub enum Action {
     Toggle(usize),      // 按索引切换
     ToggleAtCursor,     // 切换光标处
