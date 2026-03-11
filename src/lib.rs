@@ -2,7 +2,7 @@
 
 use crate::model::Node;
 use crate::theme::load_theme_from_env_or_default;
-use crate::ui_state::UiState;
+use crate::ui_state::{StatusMessage, UiState};
 use std::path::PathBuf;
 
 pub mod model;
@@ -30,6 +30,7 @@ impl App {
 
     /// 主循环：渲染 → 输入 → 更新
     pub fn run(&self) -> anyhow::Result<()> {
+        let _raw_mode_guard = ui::RawModeGuard::new()?;
         let mut state = self.create_ui_state();
         loop {
             ui::render(&state);
@@ -37,7 +38,10 @@ impl App {
             let action = match ui::get_input() {
                 Ok(action) => action,
                 Err(e) => {
-                    eprintln!("⚠️ Input error: {e}");
+                    state.status = Some(StatusMessage {
+                        text: format!("Input error: {e}"),
+                        is_error: true,
+                    });
                     continue;
                 }
             };
@@ -45,7 +49,12 @@ impl App {
             match state.update(action) {
                 Ok(false) => break Ok(()),
                 Ok(true) => continue,
-                Err(e) => eprintln!("⚠️{e}"),
+                Err(e) => {
+                    state.status = Some(StatusMessage {
+                        text: e.to_string(),
+                        is_error: true,
+                    });
+                }
             }
         }
     }

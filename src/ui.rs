@@ -7,12 +7,18 @@ use crate::theme::Color;
 use crate::ui_state::{Action, SortMode, UiState, ViewItem};
 
 use crossterm::event::{self, Event, KeyCode, KeyEventKind, KeyModifiers};
-use crossterm::terminal;
+use crossterm::{cursor, queue, terminal};
 use std::io::{self, Write};
 
 /// raw mode守卫，析构时恢复
-#[allow(dead_code)]
 pub struct RawModeGuard;
+
+impl RawModeGuard {
+    pub fn new() -> anyhow::Result<Self> {
+        terminal::enable_raw_mode()?;
+        Ok(Self)
+    }
+}
 
 impl Drop for RawModeGuard {
     fn drop(&mut self) {
@@ -22,6 +28,14 @@ impl Drop for RawModeGuard {
 
 /// 渲染文件树
 pub fn render(state: &UiState) {
+    let stdout = io::stdout();
+    let mut out = stdout.lock();
+    let _ = queue!(
+        out,
+        terminal::Clear(terminal::ClearType::All),
+        cursor::MoveTo(0, 0)
+    );
+
     let view = state.flatten_view();
     let total = view.len();
     let max_idx_width = total.saturating_sub(1).to_string().len().max(1);
@@ -44,19 +58,18 @@ pub fn render(state: &UiState) {
     let (dir_min, dir_max) = size_range(&view, true).unwrap_or((0, 0));
     let (file_min, file_max) = size_range(&view, false).unwrap_or((0, 0));
 
-    // 清屏
-    print!("\x1b[2J\x1b[H");
-
     // 标题
-    println!(
-        "--- File Tree (Total: {}, Showing: {}-{}) ---",
+    let _ = write!(
+        out,
+        "--- File Tree (Total: {}, Showing: {}-{}) ---\r\n",
         total,
         start,
         end.saturating_sub(1)
     );
     if remaining_above > 0 || remaining_below > 0 {
-        println!(
-            "(More: above {}, below {})",
+        let _ = write!(
+            out,
+            "(More: above {}, below {})\r\n",
             remaining_above, remaining_below
         );
     }
@@ -111,8 +124,9 @@ pub fn render(state: &UiState) {
         };
         let fg_reset = state.theme.fg_reset.to_ansi().unwrap_or_default();
 
-        println!(
-            "{}{} {}{} {} {}{}{} ({}){}",
+        let _ = write!(
+            out,
+            "{}{} {}{} {} {}{}{} ({}){}\r\n",
             hl_start,
             selection,
             idx_str,
@@ -138,9 +152,9 @@ pub fn render(state: &UiState) {
             String::new()
         };
         let reset = state.theme.reset.to_ansi().unwrap_or_default();
-        println!("{}{}{}", color, status.text, reset);
+        let _ = write!(out, "{}{}{}\r\n", color, status.text, reset);
     } else {
-        println!();
+        let _ = write!(out, "\r\n");
     }
 
     // 帮助栏
@@ -148,11 +162,12 @@ pub fn render(state: &UiState) {
         SortMode::NameAsc => "name",
         SortMode::SizeDesc => "size",
     };
-    print!(
+    let _ = write!(
+        out,
         "[j/k] Move | [Enter/t] Toggle | [s] Sort({}) | [q] Quit | Index: {} > ",
         sort_label, state.input_buffer
     );
-    io::stdout().flush().ok();
+    let _ = out.flush();
 }
 
 /// 格式化文件大小
